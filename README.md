@@ -1,4 +1,6 @@
 # knative-testing
-Dummy repository for testing Knative automatic issue tracking.
+Dummy repository, primarily for testing Knative automatic issue tracking.
 
-Nothing of value will ever live here, except for dummy issues made by bots that are immediately closed by me.
+Also holds experiments, practice, and prototypes for various technologies.
+
+See [knative/test-infra](https://github.com/knative/test-infra) for actual implementations
