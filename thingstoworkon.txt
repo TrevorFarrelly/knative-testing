@@ -1,0 +1,4 @@
+1. combine github and slack posts into single handler that "dumps" message to both
+2. change RepoData to make more sense with new format. Associate repo with all job configurations like in config.go?
+3. update to use the prowapi for job configuration
+4. abstract configuration out of code and into config files. JSON? YAML?
