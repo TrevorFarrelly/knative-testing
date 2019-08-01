@@ -1,0 +1,14 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: scraper
+spec:
+  template:
+    metadata:
+      labels:
+        app: scraper
+    spec:
+      containers:
+      - name: knative-retry-scraper
+        image: gcr.io/trevorfarrelly-knative-2019/scraper:latest
+        command: ["/knative-retry-scraper"]

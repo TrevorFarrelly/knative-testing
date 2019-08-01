@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,135 +14,107 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package reporter contains helpers for publishing statues to Pub
-// statuses in GitHub.
+// TODO(yt3liu): Remove this file after using definition in "k8s.io/test-infra" directly
+// https://github.com/knative/test-infra/issues/912
+
 package main
 
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"strings"
+// ProwJobType specifies how the job is triggered.
+type ProwJobType string
 
-	"cloud.google.com/go/pubsub"
-
-	prowapi "k8s.io/test-infra/prow/apis/prowjobs/v1"
-	"k8s.io/test-infra/prow/config"
-)
-
+// Various job types.
 const (
-	// PubSubProjectLabel annotation
-	PubSubProjectLabel = "prow.k8s.io/pubsub.project"
-	// PubSubTopicLabel annotation
-	PubSubTopicLabel = "prow.k8s.io/pubsub.topic"
-	// PubSubRunIDLabel annotation
-	PubSubRunIDLabel = "prow.k8s.io/pubsub.runID"
-	// GCSPrefix is the prefix for a gcs path
-	GCSPrefix = "gs://"
+	// PresubmitJob means it runs on unmerged PRs.
+	PresubmitJob ProwJobType = "presubmit"
+	// PostsubmitJob means it runs on each new commit.
+	PostsubmitJob ProwJobType = "postsubmit"
+	// Periodic job means it runs on a time-basis, unrelated to git changes.
+	PeriodicJob ProwJobType = "periodic"
+	// BatchJob tests multiple unmerged PRs at the same time.
+	BatchJob ProwJobType = "batch"
 )
+
+// ProwJobState specifies whether the job is running
+type ProwJobState string
+
+// Various job states.
+const (
+	// TriggeredState means the job has been created but not yet scheduled.
+	TriggeredState ProwJobState = "triggered"
+	// PendingState means the job is scheduled but not yet running.
+	PendingState ProwJobState = "pending"
+	// SuccessState means the job completed without error (exit 0)
+	SuccessState ProwJobState = "success"
+	// FailureState means the job completed with errors (exit non-zero)
+	FailureState ProwJobState = "failure"
+	// AbortedState means prow killed the job early (new commit pushed, perhaps).
+	AbortedState ProwJobState = "aborted"
+	// ErrorState means the job could not schedule (bad config, perhaps).
+	ErrorState ProwJobState = "error"
+)
+
+// Refs describes how the repo was constructed.
+type Refs struct {
+	// Org is something like kubernetes or k8s.io
+	Org string `json:"org"`
+	// Repo is something like test-infra
+	Repo string `json:"repo"`
+	// RepoLink links to the source for Repo.
+	RepoLink string `json:"repo_link,omitempty"`
+
+	BaseRef string `json:"base_ref,omitempty"`
+	BaseSHA string `json:"base_sha,omitempty"`
+	// BaseLink is a link to the commit identified by BaseSHA.
+	BaseLink string `json:"base_link,omitempty"`
+
+	Pulls []Pull `json:"pulls,omitempty"`
+
+	// PathAlias is the location under <root-dir>/src
+	// where this repository is cloned. If this is not
+	// set, <root-dir>/src/github.com/org/repo will be
+	// used as the default.
+	PathAlias string `json:"path_alias,omitempty"`
+	// CloneURI is the URI that is used to clone the
+	// repository. If unset, will default to
+	// `https://github.com/org/repo.git`.
+	CloneURI string `json:"clone_uri,omitempty"`
+	// SkipSubmodules determines if submodules should be
+	// cloned when the job is run. Defaults to true.
+	SkipSubmodules bool `json:"skip_submodules,omitempty"`
+	// CloneDepth is the depth of the clone that will be used.
+	// A depth of zero will do a full clone.
+	CloneDepth int `json:"clone_depth,omitempty"`
+}
+
+// Pull describes a pull request at a particular point in time.
+type Pull struct {
+	Number int    `json:"number"`
+	Author string `json:"author"`
+	SHA    string `json:"sha"`
+	Title  string `json:"title,omitempty"`
+
+	// Ref is git ref can be checked out for a change
+	// for example,
+	// github: pull/123/head
+	// gerrit: refs/changes/00/123/1
+	Ref string `json:"ref,omitempty"`
+	// Link links to the pull request itself.
+	Link string `json:"link,omitempty"`
+	// CommitLink links to the commit identified by the SHA.
+	CommitLink string `json:"commit_link,omitempty"`
+	// AuthorLink links to the author of the pull request.
+	AuthorLink string `json:"author_link,omitempty"`
+}
 
 // ReportMessage is a message structure used to pass a prowjob status to Pub/Sub topic.s
 type ReportMessage struct {
-	Project string               `json:"project"`
-	Topic   string               `json:"topic"`
-	RunID   string               `json:"runid"`
-	Status  prowapi.ProwJobState `json:"status"`
-	URL     string               `json:"url"`
-	GCSPath string               `json:"gcs_path"`
-	Refs    []prowapi.Refs       `json:"refs,omitempty"`
-	JobType prowapi.ProwJobType  `json:"job_type"`
-	JobName string               `json:"job_name"`
-}
-
-// Client is a reporter client fed to crier controller
-type Client struct {
-	config config.Getter
-}
-
-// NewReporter creates a new Pub/Sub reporter
-func NewReporter(cfg config.Getter) *Client {
-	return &Client{
-		config: cfg,
-	}
-}
-
-// GetName returns the name of the reporter
-func (c *Client) GetName() string {
-	return "pubsub-reporter"
-}
-
-func findLabels(pj *prowapi.ProwJob, labels ...string) map[string]string {
-	// Support checking for both labels(deprecated) and annotations(new) for backward compatibility
-	pubSubMap := map[string]string{}
-	for _, label := range labels {
-		if pj.Annotations[label] != "" {
-			pubSubMap[label] = pj.Annotations[label]
-		} else {
-			pubSubMap[label] = pj.Labels[label]
-		}
-	}
-	return pubSubMap
-}
-
-// ShouldReport tells if a prowjob should be reported by this reporter
-func (c *Client) ShouldReport(pj *prowapi.ProwJob) bool {
-	pubSubMap := findLabels(pj, PubSubProjectLabel, PubSubTopicLabel)
-	return pubSubMap[PubSubProjectLabel] != "" && pubSubMap[PubSubTopicLabel] != ""
-}
-
-// Report takes a prowjob, and generate a pubsub ReportMessage and publish to specific Pub/Sub topic
-// based on Pub/Sub related labels if they exist in this prowjob
-func (c *Client) Report(pj *prowapi.ProwJob) ([]*prowapi.ProwJob, error) {
-	message := c.generateMessageFromPJ(pj)
-
-	ctx := context.Background()
-	client, err := pubsub.NewClient(ctx, message.Project)
-
-	if err != nil {
-		return nil, fmt.Errorf("could not create pubsub Client: %v", err)
-	}
-	topic := client.Topic(message.Topic)
-
-	d, err := json.Marshal(message)
-	if err != nil {
-		return nil, fmt.Errorf("could not marshal pubsub report: %v", err)
-	}
-
-	res := topic.Publish(ctx, &pubsub.Message{
-		Data: d,
-	})
-
-	_, err = res.Get(ctx)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to publish pubsub message with run ID %q to topic: \"%s/%s\". %v",
-			message.RunID, message.Project, message.Topic, err)
-	}
-
-	return []*prowapi.ProwJob{pj}, nil
-}
-
-func (c *Client) generateMessageFromPJ(pj *prowapi.ProwJob) *ReportMessage {
-	pubSubMap := findLabels(pj, PubSubProjectLabel, PubSubTopicLabel, PubSubRunIDLabel)
-	var refs []prowapi.Refs
-	if pj.Spec.Refs != nil {
-		refs = append(refs, *pj.Spec.Refs)
-	}
-	refs = append(refs, pj.Spec.ExtraRefs...)
-
-	return &ReportMessage{
-		Project: pubSubMap[PubSubProjectLabel],
-		Topic:   pubSubMap[PubSubTopicLabel],
-		RunID:   pubSubMap[PubSubRunIDLabel],
-		Status:  pj.Status.State,
-		URL:     pj.Status.URL,
-		GCSPath: strings.Replace(pj.Status.URL, c.config().Plank.GetJobURLPrefix(pj.Spec.Refs), GCSPrefix, 1),
-		Refs:    refs,
-		JobType: pj.Spec.Type,
-		JobName: pj.Spec.Job,
-	}
-}
-
-func GetFakeProwJob() {
-
+	Project string       `json:"project"`
+	Topic   string       `json:"topic"`
+	RunID   string       `json:"runid"`
+	Status  ProwJobState `json:"status"`
+	URL     string       `json:"url"`
+	GCSPath string       `json:"gcs_path"`
+	Refs    []Refs       `json:"refs,omitempty"`
+	JobType ProwJobType  `json:"job_type"`
+	JobName string       `json:"job_name"`
 }
