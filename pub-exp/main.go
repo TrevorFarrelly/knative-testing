@@ -5,6 +5,7 @@ import (
   "log"
   "encoding/json"
 	"cloud.google.com/go/pubsub"
+  "flag"
 )
 
 const (
@@ -19,22 +20,36 @@ var (
     RunID: "foo",
     Status: FailureState,
     URL: "bar",
+    GCSPath: "gs://knative-prow/pr-logs/pull/knative_serving/5106/pull-knative-serving-integration-tests/1159852250034606080",
     Refs: []Refs{
       {
         Org: "knative",
         Repo: "serving",
         Pulls: []Pull{{
-          Number: 4898,
+          Number: 5006,
         }},
       },
     },
     JobType: PresubmitJob,
     JobName: "pull-knative-serving-integration-tests",
   }
-  msg = testFail
 )
 
+func makeMsg(repo, jobName, jobType, status string) *ReportMessage {
+  msg := testFail
+  msg.JobName = jobName
+  msg.JobType = ProwJobType(jobType)
+  msg.Status = ProwJobState(status)
+  msg.Refs[0].Repo = repo
+  return testFail
+}
+
 func main() {
+  repo := flag.String("repo", "serving", "")
+  jobType := flag.String("type", string(PresubmitJob), "")
+  status := flag.String("status", string(FailureState), "")
+  flag.Parse()
+  msg := makeMsg(*repo, "pull-knative-serving-integration-tests", *jobType, *status)
   ctx := context.Background()
   client, err := pubsub.NewClient(ctx, msg.Project)
   if err != nil {

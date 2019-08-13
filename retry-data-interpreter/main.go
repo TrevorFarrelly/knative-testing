@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	serviceAccount = "gcp.json"
+	serviceAccount = "/usr/local/google/home/trevorfarrelly/.ssh/gcp.json"
 	format        = "2006-01-02"
 )
 
