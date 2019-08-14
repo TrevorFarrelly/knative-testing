@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"knative.dev/test-infra/sharedghutil"
+	"knative.dev/test-infra/shared/ghutil"
 	"github.com/google/go-github/github"
 	"log"
 	"net/http"
